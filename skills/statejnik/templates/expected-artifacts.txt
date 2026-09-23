@@ -1,0 +1,105 @@
+# _EXPECTED-ARTIFACTS.txt - эталонный список артефактов-доказательств по этапам.
+#
+# Используется на Этапе 16.1 (Hard gate: сверка артефактов):
+#   ls work/<slug>/ | sort > work/<slug>/_actual-artifacts.txt
+#   diff templates/expected-artifacts.txt work/<slug>/_actual-artifacts.txt
+#
+# Расхождений быть не должно. Если пункт закрыт валидным SKIP в чек-листе
+# (Этап 6b без config.image.tool, Этап 11 при неизменном рендере, Этап 13.2
+# без schema) - соответствующий артефакт отсутствует законно; такое расхождение
+# объясняется в чек-листе, а не молча.
+#
+# Имена жёсткие: ровно так файлы названы в work/<slug>/. Меняешь имя в чек-листе -
+# меняй и здесь, иначе diff будет врать.
+#
+# Строки, начинающиеся с #, - комментарии (для глаза). Если вы хотите чистый
+# машинный diff - сравнивайте отфильтрованную версию:
+#   grep -v '^#' templates/expected-artifacts.txt | grep -v '^$' | sort > /tmp/expected.txt
+#   diff /tmp/expected.txt work/<slug>/_actual-artifacts.txt
+
+# --- Этап 0: контекст ---
+etap-00-published-registry.md
+
+# --- Этап 1: поиск темы (отсутствуют целиком, если тема задана явно - SKIP) ---
+etap-01-pain-points.md
+etap-01-unique-material.md
+etap-01-external-viral.md
+etap-01-serp-gaps.md
+etap-01-pool.md
+etap-01-weights.md
+
+# --- Этап 3: заголовок ---
+etap-03-h1-variants.md
+
+# --- Этап 4: deep research ---
+research-external.md
+research-internal.md
+sources.md
+
+# --- Этап 5: структура ---
+etap-05-structure.md
+
+# --- Этап 6: написание (основной артефакт - тело статьи) ---
+draft.md
+
+# --- Этап 6b: hero (условный, SKIP если config.image.tool пуст) ---
+etap-06b-hero-meta.md
+
+# --- Этап 2: принятие темы (ежедневный режим; артефакты дня живут в work/topics/YYYY-MM-DD/) ---
+brief.md
+claims.md
+
+# --- Этап 7: multi-agent QA (7 агентов) ---
+etap-07-qa-1-antiai.md
+etap-07-qa-2-compliance.md
+etap-07-qa-3-tone.md
+etap-07-qa-4-factcheck.md
+etap-07-qa-5-seo-geo.md
+etap-07-qa-6-crosslink.md
+etap-07-qa-7-selfdisclosure.md
+
+# --- Этап 8: цикл хуманизации ---
+etap-08-baseline.md
+etap-08-recheck.md
+etap-08-manual-grep.md
+etap-08-read-aloud.md
+
+# --- Этап 9: публикация в черновик ---
+etap-09-publish-draft.md
+
+# --- Этап 10: локальный preview ---
+etap-10-preview-http.txt
+
+# --- Этап 11: визуальная QA (условный, SKIP если рендер не менялся) ---
+etap-11-desktop.png
+etap-11-mobile.png
+etap-11-dom.json
+etap-11-og.png
+
+# --- Этап 11a: финальный независимый каскад (каталог с прогонами) ---
+final-review/
+
+# --- Этап 12: промоут на прод ---
+etap-12-publish-prod.md
+etap-12b-prod-visual.png
+etap-12c-remote-verify.md
+
+# --- Этап 13: SEO/GEO-аудит на проде ---
+etap-13-availability.txt
+etap-13-cwv.md
+etap-13-index-artifacts.txt
+etap-13-geo-bot.txt
+etap-13-seo-geo-audit.md
+
+# --- Этап 14: аудит соответствия ---
+etap-14-prod.html
+etap-14-compliance-audit.md
+
+# --- Этап 15: AI-detection ---
+etap-15-prod.html
+etap-15-audit.md
+
+# --- Этап 16: финальный gate + уведомление + ретроспектива ---
+otchet.md
+retro.md
+_actual-artifacts.txt

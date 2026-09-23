@@ -1,0 +1,61 @@
+# statejnik.yaml - всё, что специфично для вашего проекта.
+# Скопируйте в рабочую папку как statejnik.yaml и заполните. Ключи - только в .env.
+
+project:
+  name: "Название бизнеса"
+  domain: "example.com"
+  content_path: "/blog"          # раздел статей на сайте
+  region: "Россия"
+  brands: []                     # ваш бренд и бренды конкурентов (запросы с ними не берём в статьи)
+
+audience:
+  profile: |
+    Кто читатель, что он знает и чего не знает, чего боится, что хочет получить.
+  jargon_level: "low"            # low - термины объясняем; high - читатель эксперт
+
+voice:
+  person: "мы"                   # от чьего лица: я / мы
+  address: "вы"                  # обращение к читателю: ты / вы
+  source: ""                     # папка с образцами текстов владельца (необязательно)
+  forbidden: []                  # фразы, которые звучат не по-вашему
+
+cta:
+  offer: "Что продаём статьями"
+  url: "https://example.com/offer"
+
+editorial:
+  banned_words: []               # стоп-слова: бренд-табу, юр-ограничения
+  notes: ""                      # особые правила ниши (медицина, финансы и т. п.)
+
+seo:
+  seeds: []                      # стартовые фразы (можно вместо work/seeds.txt)
+  regions: [225]                 # регионы Вордстата: 225 Россия, 213 Москва, 2 СПб
+  competitors: []                # домены конкурентов
+
+publish:
+  auto: false                    # true - агент публикует сам; false - только черновики
+  default: site                  # площадка по умолчанию
+  targets:
+    files:
+      type: manual
+    # site:
+    #   type: wordpress
+    #   url: https://example.com
+    # dzen:
+    #   type: dzen_rss
+    #   feed_path: /var/www/example.com/dzen.xml
+    #   feed_url: https://example.com/dzen.xml
+    #   default_image: https://example.com/cover.jpg
+    # blogspot:
+    #   type: blogger
+    #   blog_id: "1234567890"
+    # notion:
+    #   type: mcp
+    #   server: notion
+    #   tool: create-page
+
+tools:                           # пороги проверок; можно не трогать
+  originality: {max_cosine: 0.5, max_ngram: 0.3, ngram_n: 5}
+  read_aloud: {max_sentence_words: 28, max_word_len: 17, max_consonant_run: 5}
+  cadence: {max_per_1k: 8.0}
+  structure: {min_internal_links: 3}
