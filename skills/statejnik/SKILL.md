@@ -43,22 +43,23 @@ metadata:
 
 ## Режим 2. Статья
 
-Процесс - `references/methodology.md` (16 этапов). Коротко:
+**Главный маршрут - `references/process/INDEX.md`** (процесс «сначала поиск», модули 01-08). Он старше `references/methodology.md` (16 этапов): тот - справочник конкретных диагностик. Читать модуль текущего этапа, а не всё сразу. Коротко:
 
-1. Взять следующую тему из `work/plan.md` (или тему владельца). Проверить, что её нет на сайте: `site.py gap` или поиск по `work/site.json`.
-2. Исследование через `web_search` / `web_extract`: топ-10 выдачи по главному запросу, первоисточники, факты с ссылками. Каждое утверждение с цифрой - только с источником.
-3. Структура: H2 в форме вопросов из ядра, TL;DR первым абзацем каждого раздела. Скелет - `templates/draft-skeleton.md`.
-4. Текст в `work/<slug>/draft.md`. Правила - `references/editorial/editorial-standard.md`, анти-ИИ - `references/checklists/anti-ai.md`.
-5. Проверки (все должны пройти):
+1. **Тема.** Отбор по `references/topic-selection.md` и `references/process/03-plan.md`: свежая проверка дублей (`work/published.json`, `work/site.json`, `site:домен`), выбор делает независимый проверяющий (свежий субагент). Не больше двух попыток на слот: не вышло - «не вышло X, беру Y» с причиной.
+2. **Исследование** - `process/04-research.md`: выдача, первоисточники, `work/<slug>/brief.md`, реестр фактов `work/<slug>/claims.json` (у каждого утверждения - адрес источника и дословная опора). Проверка «реальности читателя» - `process/reader-reality.md`.
+3. **Текст** - `process/05-write.md` + `references/editorial/editorial-standard.md`, скелет `templates/draft-skeleton.md`, в `work/<slug>/draft.md`.
+4. **Проверки** (все должны пройти):
    ```
    python3 $SKILL_DIR/scripts/structure-check.py work/<slug>/draft.md
    python3 $SKILL_DIR/scripts/ai-cadence-check.py work/<slug>/draft.md
    python3 $SKILL_DIR/scripts/read-aloud-check.py work/<slug>/draft.md
    python3 $SKILL_DIR/scripts/originality-check.py work/<slug>/draft.md work/sources/
    ```
-   Плюс чек-листы `references/checklists/seo-geo.md`, `compliance.md`, для России - `legal-ru.md`. Финальная вычитка - `references/editorial/final-review.md`, лучше свежим субагентом (`delegate_task`).
-6. Сохранить `work/<slug>/final.md`. Публикация черновиком: `python3 $SKILL_DIR/scripts/publish.py send <площадка> work/<slug>/final.md --status draft`. Боевая публикация (`--status publish`) - только если владелец разрешил автопубликацию (`publish.auto: true`) или сказал «публикуй».
-7. После публикации на сайте: `python3 $SKILL_DIR/scripts/publish.py ping <url>` (IndexNow, если настроен), отметить тему в `work/plan.md` как сделанную, отчёт владельцу по `references/owner-report.md`.
+   Плюс чек-листы `references/checklists/seo-geo.md`, `cta.md`, `compliance.md`, для России - `legal-ru.md`.
+5. **Независимая проверка** - `process/06-review.md`: свежий субагент (`delegate_task`) получает brief, claims.json и полные источники, но не объяснения автора. Разделы reader-reality и reasoning в вердикте обязательны. До трёх кругов.
+6. **Финальная вычитка** - `process/final-humanization.md`: ещё два свежих субагента (редактор и сверяющий финал). Итог - `work/<slug>/final.md`. Любая правка после приёмки снимает приёмку.
+7. **Выпуск** - `process/07-delivery.md`: `python3 $SKILL_DIR/scripts/publish.py send <площадка> work/<slug>/final.md --status draft`. Боевая (`--status publish`) - только при `publish.auto: true` или прямом «публикуй». Открыть живую страницу и сверить текст целиком, затем `publish.py ping <url>`, отчёт владельцу по `references/owner-report.md`.
+8. **Обратная связь** - `process/08-feedback.md`: запись в `work/journal.md` после каждой статьи, раз в неделю разбор по Вебмастеру / Search Console и правка `work/plan.md`.
 
 ## Режим 3. Автопилот
 

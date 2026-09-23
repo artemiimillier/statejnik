@@ -47,7 +47,7 @@ etap-06b-hero-meta.md
 
 # --- Этап 2: принятие темы (ежедневный режим; артефакты дня живут в work/topics/YYYY-MM-DD/) ---
 brief.md
-claims.md
+claims.json
 
 # --- Этап 7: multi-agent QA (7 агентов) ---
 etap-07-qa-1-antiai.md
