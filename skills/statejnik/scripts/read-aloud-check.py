@@ -12,6 +12,9 @@ read-aloud-check.py - механическая проверка текста «�
   3. Очень длинные слова     - длиннее N букв тяжелы вслух.
   4. Канцелярит / причастия   - суффиксы -вшись/-ующ/-явш и т.п. спотыкают.
   5. Голые цифры              - «4-6» вместо «четыре-шесть»: вслух неоднозначно.
+                                ТОЛЬКО ПРЕДУПРЕЖДЕНИЕ: в статье цифры нормальны.
+                                Таблицы, код, frontmatter, даты, числа с единицами
+                                (°C, %, мм, циклов, руб...) не считаются.
 
 Это НЕ замена чтению вслух живым человеком (финальный судья - он). Это сито,
 которое снимает грубые куски до вычитки. Заточено под русский текст.
@@ -29,7 +32,13 @@ PyYAML не требуется.
   python3 scripts/read-aloud-check.py <статья.md> --max-sentence 24 --json
   python3 scripts/read-aloud-check.py <статья.md> --config ./statejnik.yaml
 
-Коды выхода: 0 = чисто, 1 = есть флаги (не блокер, список на правку), 3 = ошибка ввода.
+Коды выхода:
+  0 = блокеров нет (предупреждения возможны: голые цифры, длинные слова,
+      скопления согласных, причастия - список на правку, не блокер);
+  1 = есть блокер: предложение длиннее max_sentence_words (его нельзя прочесть
+      на одном дыхании). С --strict exit 1 дают любые флаги, кроме голых цифр;
+  3 = ошибка ввода.
+Таблицы (строки `| ... |`) в проверку не входят: в них цифры и обрывки - норма.
 """
 import argparse
 import json
@@ -59,7 +68,10 @@ CLUNKY_SUFFIX = re.compile(
     r"вшихся|вшийся|вшегося)\w*"
     r"|[а-яё]{8,}(?:ующ|ающ|ивш|явш|ующих|ающих)\w*",
     re.IGNORECASE)
-DIGIT_TOKEN = re.compile(r"(?<!\w)\d+([\-–]\d+)?(?!\w)")
+DIGIT_TOKEN = re.compile(r"(?<![\w.,])\d{1,3}(?:[ \u00a0\u202f]\d{3})+(?![\w])|(?<![\w.,])\d+(?:[.,]\d+)?(?:[\-–]\d+(?:[.,]\d+)?)?(?![\w])")
+UNIT_AFTER = re.compile(r"^\s?(%|°|‰|₽|\$|€|×|x\b|х\b|мм|см|м\b|км|кг|г\b|л\b|мл|руб|тыс|млн|млрд|шт|ч\b|час|мин|сек|"
+                        r"дн|день|дня|дней|лет|год|раз|цикл|процент|градус|ватт|вт|квт|гб|мб|см²|м²|кв)", re.I)
+DATE_LIKE = re.compile(r"^(19|20)\d\d$")
 WORD = re.compile(r"[а-яёa-z]+", re.IGNORECASE)
 
 
@@ -70,10 +82,13 @@ def read(path):
 
 def strip_for_speech(text):
     """Оставить только произносимое: убрать markup, код, html, ссылки, тайм-коды."""
+    text = text.lstrip("\ufeff")
+    text = re.sub(r"^---\s*\n.*?\n---\s*\n", " ", text, flags=re.DOTALL)  # yaml-фронтматтер
     text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
     text = re.sub(r"`[^`]*`", " ", text)
+    text = re.sub(r"(?m)^\s*\|.*\|\s*$", " ", text)                  # таблицы
+    text = re.sub(r"<!--.*?-->", " ", text, flags=re.DOTALL)
     text = re.sub(r"<[^>]+>", " ", text)                              # html-теги
-    text = re.sub(r"^---\n.*?\n---\n", " ", text, flags=re.DOTALL)    # yaml-фронтматтер
     text = re.sub(r"^\s*#{1,6}.*$", " ", text, flags=re.MULTILINE)    # заголовки-секции
     text = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", text)                 # картинки
     text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)              # ссылки → текст
@@ -106,8 +121,9 @@ def parse_args():
                     "голые цифры. Заточено под русский текст.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="Пороги: statejnik.yaml (tools.read_aloud.*) → флаги CLI → дефолты "
-               "(28 слов / 17 букв / 5 согласных). Коды выхода: 0=чисто, "
-               "1=есть флаги, 3=ошибка ввода.",
+               "(28 слов / 17 букв / 5 согласных). Коды выхода: 0=блокеров нет "
+               "(предупреждения возможны), 1=есть предложение длиннее порога (с --strict - и "
+               "прочие флаги, кроме цифр), 3=ошибка ввода. Голые цифры и таблицы exit 1 не дают.",
     )
     p.add_argument("article", help="файл статьи (.md/.txt/.html и т.п.)")
     p.add_argument("--config", default=None,
@@ -119,6 +135,8 @@ def parse_args():
     p.add_argument("--max-consonant-run", type=int, default=None,
                    help="макс. согласных подряд (перебивает statejnik.yaml)")
     p.add_argument("--json", action="store_true", help="вывод машинно-читаемым JSON")
+    p.add_argument("--strict", action="store_true",
+                   help="exit 1 при любых флагах, кроме голых цифр (для финальной вычитки вслух)")
     return p.parse_args()
 
 
@@ -160,12 +178,17 @@ def main():
         for m in CLUNKY_SUFFIX.finditer(s):
             flags["clunky_morphology"].append(m.group(0))
         for m in DIGIT_TOKEN.finditer(s):
-            flags["bare_digits"].append(m.group(0))
+            tok = m.group(0)
+            if UNIT_AFTER.match(s[m.end():m.end() + 10]) or DATE_LIKE.match(tok):
+                continue
+            flags["bare_digits"].append(tok)
 
     for k in ("long_word", "consonant_cluster", "clunky_morphology", "bare_digits"):
         flags[k] = sorted(set(flags[k]))
 
     total_flags = sum(len(v) for v in flags.values())
+    blocking = ["long_sentence"] + (["consonant_cluster", "long_word", "clunky_morphology"] if args.strict else [])
+    n_block = sum(len(flags[k]) for k in blocking)
     avg_ws = round(total_words / len(sentences), 1) if sentences else 0
     result = {
         "article": args.article,
@@ -174,7 +197,8 @@ def main():
         "thresholds": {"max_sentence_words": max_sent, "max_word_len": max_word,
                        "max_consonant_run": cons_run},
         "flag_count": total_flags, "flags": flags,
-        "verdict": "CLEAN" if total_flags == 0 else "REVIEW",
+        "blocking_flags": n_block, "blocking_kinds": blocking,
+        "verdict": "CLEAN" if total_flags == 0 else ("BLOCK" if n_block else "WARN"),
     }
 
     if args.json:
@@ -196,11 +220,15 @@ def main():
             print("\n  ! Причастия/канцелярит (спотыкают вслух): "
                   + ", ".join(flags["clunky_morphology"][:15]))
         if flags["bare_digits"]:
-            print("\n  ! Голые цифры (проговори словами, если читаешь вслух): "
+            print("\n  ~ Голые цифры - предупреждение, не ошибка (проговори словами, если это текст для чтения вслух): "
                   + ", ".join(flags["bare_digits"][:15]))
         if total_flags == 0:
             print("  Грубых спотыканий нет. Финальная проверка - чтение вслух человеком.")
-    sys.exit(0 if total_flags == 0 else 1)
+        if n_block:
+            print(f"\n  Блокеров: {n_block} ({', '.join(k for k in blocking if flags[k])}) - exit 1.")
+        elif total_flags:
+            print("\n  Блокеров нет; флаги выше - список на правку (exit 0).")
+    sys.exit(1 if n_block else 0)
 
 
 if __name__ == "__main__":

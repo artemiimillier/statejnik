@@ -3,7 +3,7 @@
 Каждая площадка - блок в `statejnik.yaml → publish.targets.<имя>`. Имя придумываете сами (`site`, `dzen`, `blog2`). Ключи хранятся только в `.env`.
 
 Проверка без публикации: `python3 $SKILL_DIR/scripts/publish.py check <имя>`.
-Отправка: `python3 $SKILL_DIR/scripts/publish.py send <имя> work/<slug>/final.md --status draft|publish`.
+Отправка: `python3 $SKILL_DIR/scripts/publish.py send <имя> work/<slug>/final.md --status draft|publish`. Для `--status publish` нужен `work/<slug>/accepted.md` (запись приёмки, `process/06-review.md`) - без него скрипт откажет.
 
 Повторная отправка той же статьи обновляет запись, а не создаёт дубль (id хранятся в `work/published.json`).
 
@@ -16,17 +16,17 @@
 | Канал в Дзене | `dzen_rss` (нужен сайт, который раздаёт файл) или `manual` |
 | У сервиса есть MCP-сервер (WordPress MCP, Notion, Ghost, свой) | `mcp` |
 | Tilda, n8n, Make, свой бэкенд с приёмом JSON | `webhook` |
-| Ничего из этого / хочу руками | `manual` |
+| Ничего из этого / хочу руками / «готовыми файлами» | `manual` (псевдоним `files`) |
 
-## manual
+## manual (files)
 
 ```yaml
-files:
-  type: manual
+files:                   # имя площадки - любое
+  type: manual           # type: files - то же самое
   dir: work/ready        # по умолчанию
 ```
 
-Кладёт `<slug>.md` и `<slug>.html`. Подходит для любой CMS: копируете и вставляете в редактор.
+Кладёт `<slug>.md` и `<slug>.html`. Подходит для любой CMS: копируете и вставляете в редактор. Служебные поля (title, meta, excerpt) владелец вставляет в CMS руками - перечислить их в отчёте. Сверка и «готово» для этого типа - короткий путь в `process/07-delivery.md`: сверить файлы, сдать владельцу, после ручной публикации - `publish.py record <имя> <slug> <id> <url>` и `publish.py ping <url>`.
 
 ## wordpress
 
@@ -86,7 +86,7 @@ dzen:
 Если у площадки есть MCP-сервер, агент публикует сам через него. Сначала подключить сервер к агенту:
 
 - Hermes: `hermes mcp add <имя> --url <адрес> --auth header` (или `--command ... --args ...` для локального)
-- Claude Code: `claude mcp add --transport http <имя> <адрес> -H "Authorization: Bearer <ключ>"`
+- Claude Code: `claude mcp add --transport http <имя> <адрес> -H "<заголовок авторизации из документации сервера>"` (ключ владелец подставляет сам, в чат не присылает)
 
 Затем посмотреть список инструментов сервера и выбрать тот, что создаёт запись.
 

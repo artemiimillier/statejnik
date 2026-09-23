@@ -121,6 +121,38 @@ def request(method, url, headers=None, body=None, timeout=30, allow_private=True
         return e.code, dict(e.headers or {}), e.read() or b""
 
 
+BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/128.0 Safari/537.36")
+
+
+def fetch(url, headers=None, timeout=30, allow_private=False, browser_ua=True, max_bytes=20_000_000):
+    """GET с защитой от внутренних адресов. Возвращает (status, headers, bytes, final_url).
+
+    final_url - адрес после всех редиректов. Ошибки HTTP не бросает - отдаёт статус
+    (для бесконечного редиректа это 3xx). Сетевые ошибки бросает (URLError/OSError).
+    """
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        raise ValueError(f"поддерживаются только http/https: {url}")
+    if not allow_private and is_private_host(parts.hostname or ""):
+        raise ValueError(f"внутренний адрес заблокирован: {parts.hostname} (флаг --allow-private снимает защиту)")
+    hdrs = {"User-Agent": BROWSER_UA if browser_ua else UA,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.7"}
+    hdrs.update(headers or {})
+    req = urllib.request.Request(url, headers=hdrs, method="GET")
+    opener = urllib.request.build_opener() if allow_private else urllib.request.build_opener(_GuardedRedirect())
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            return resp.status, dict(resp.headers), resp.read(max_bytes), resp.geturl()
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read() or b""
+        except Exception:
+            body = b""
+        return e.code, dict(e.headers or {}), body, e.geturl() or url
+
+
 def request_json(method, url, headers=None, body=None, timeout=30, ok=(200, 201, 202, 204)):
     """Запрос с JSON-ответом. При статусе вне `ok` - RuntimeError с началом тела ответа."""
     status, _, raw = request(method, url, headers=headers, body=body, timeout=timeout)

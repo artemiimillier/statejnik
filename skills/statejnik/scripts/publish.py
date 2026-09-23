@@ -9,12 +9,23 @@
     python3 publish.py ping https://site.ru/blog/slug         # IndexNow (Яндекс, Bing)
 
 Типы площадок (publish.targets.<имя>.type):
-  manual     - кладёт готовые .md и .html в папку, публикуете руками (подходит для любой CMS).
+  manual     - кладёт готовые .md и .html в папку (dir, по умолч. work/ready), публикуете руками.
+               Синоним: files. В .md сохраняется frontmatter со status: draft|publish,
+               в .html - <meta name="statejnik:status"> и noindex для черновика.
   wordpress  - REST API WordPress + пароль приложения. Черновик/публикация, повтор без дублей по slug.
   blogger    - Blogger (Blogspot) API v3, OAuth refresh-токен. Черновик/публикация.
   dzen_rss   - дописывает статью в RSS-ленту в формате Дзена; ленту раздаёт ваш сайт.
   webhook    - POST JSON на ваш адрес (Tilda/n8n/Make/свой бэкенд).
   mcp        - публикует сам агент через MCP-инструмент; скрипт только готовит полезную нагрузку.
+
+Гейт приёмки: send --status publish требует work/<slug>/accepted.md (запись приёмки
+из 06-review; slug - из frontmatter или имени папки статьи). Если в accepted.md есть
+sha256, хеш отправляемого файла должен совпасть. Обойти можно только флагом
+--force-without-acceptance (громкое предупреждение, пометка в published.json).
+send --status draft без приёмки разрешён, но печатает предупреждение.
+
+Коды выхода: 0 - готово; 1 - ошибка площадки/сети/конфига; 4 - гейт приёмки
+не пройден (нет accepted.md или файл изменён после приёмки).
 
 Повтор без дублей: результат каждой отправки пишется в work/published.json
 (slug → площадка → id). Второй вызов обновляет запись, а не создаёт новую.
@@ -41,6 +52,8 @@ from _article import load_article  # noqa: E402
 from _ru import translit  # noqa: E402
 
 LEDGER = os.path.join("work", "published.json")
+EXIT_GATE = 4
+ACCEPT_FILE = "accepted.md"
 
 
 def _ledger():
@@ -67,18 +80,72 @@ def _env_name(tcfg, key, default):
 
 # ── manual ───────────────────────────────────────────────────────────────────
 
+def _manual_dir(tcfg):
+    return tcfg.get("dir") or os.path.join("work", "ready")
+
+
+def manual_check(name, tcfg, cfg):
+    folder = _manual_dir(tcfg)
+    try:
+        os.makedirs(folder, exist_ok=True)
+        probe = os.path.join(folder, ".statejnik-write-test")
+        with open(probe, "w", encoding="utf-8") as f:
+            f.write("ok")
+        os.remove(probe)
+    except OSError as e:
+        raise SystemExit(f"{name}: папка {os.path.abspath(folder)} недоступна на запись: {e}")
+    return f"папка {os.path.abspath(folder)} существует и доступна на запись"
+
+
+def _set_status_line(fm_raw, status):
+    lines = [l for l in fm_raw.splitlines() if not re.match(r"^status\s*:", l)]
+    return "\n".join(lines + [f"status: {status}"])
+
+
+def _hero_html(hero):
+    """hero_promise (строка, список или словарь) → HTML-блок, чтобы обещание не терялось в файле."""
+    if not hero:
+        return ""
+    def item(v):
+        if isinstance(v, list):
+            return "<ul>" + "".join(f"<li>{html.escape(str(x))}</li>" for x in v if x) + "</ul>"
+        return html.escape(str(v))
+    if isinstance(hero, dict):
+        inner = "".join(f"<div data-field=\"{html.escape(str(k))}\">{item(v)}</div>" for k, v in hero.items() if v)
+    else:
+        inner = item(hero)
+    return f'<section class="hero-promise">{inner}</section>\n'
+
+
 def manual_send(name, tcfg, art, status, cfg):
-    folder = tcfg.get("dir") or os.path.join("work", "ready")
+    folder = _manual_dir(tcfg)
     os.makedirs(folder, exist_ok=True)
     base = os.path.join(folder, art["slug"])
+    fm = _set_status_line(art.get("frontmatter_raw") or f'title: "{art["title"]}"', status)
     with open(base + ".md", "w", encoding="utf-8") as f:
-        f.write(f"# {art['title']}\n\n{art['body']}")
-    doc = (f"<!doctype html><meta charset=\"utf-8\"><title>{html.escape(art['title'])}</title>"
-           f"<meta name=\"description\" content=\"{html.escape(art['description'])}\">"
-           f"<h1>{html.escape(art['title'])}</h1>\n{art['html']}\n")
+        f.write(f"---\n{fm}\n---\n\n# {art['title']}\n\n{art['body'].lstrip()}")
+    metas = [f'<meta name="statejnik:status" content="{status}">',
+             f'<meta name="statejnik:slug" content="{html.escape(art["slug"])}">']
+    if status != "publish":
+        metas.append('<meta name="robots" content="noindex, nofollow">')
+    for k, v in (art["meta"] or {}).items():
+        if k in ("status", "slug") or v in (None, "", [], {}):
+            continue
+        val = ", ".join(map(str, v)) if isinstance(v, list) else (json.dumps(v, ensure_ascii=False)
+                                                                   if isinstance(v, dict) else str(v))
+        metas.append(f'<meta name="statejnik:{html.escape(str(k))}" content="{html.escape(val)}">')
+    hero_html = _hero_html(art["meta"].get("hero_promise"))
+    title = art["meta"].get("meta_title") or art["title"]
+    doc = (f"<!doctype html>\n<html lang=\"ru\"><head><meta charset=\"utf-8\">"
+           f"<title>{html.escape(str(title))}</title>\n"
+           f"<meta name=\"description\" content=\"{html.escape(art['description'])}\">\n"
+           + "\n".join(metas) + "\n</head><body>\n"
+           + (f"<p><strong>ЧЕРНОВИК</strong> - не публиковать без приёмки.</p>\n" if status != "publish" else "")
+           + f"<h1>{html.escape(art['title'])}</h1>\n{hero_html}{art['html']}\n</body></html>\n")
     with open(base + ".html", "w", encoding="utf-8") as f:
         f.write(doc)
-    return {"id": art["slug"], "url": None, "status": "ready", "files": [base + ".md", base + ".html"]}
+    return {"id": art["slug"], "url": None, "status": "draft-file" if status != "publish" else "ready-file",
+            "files": [base + ".md", base + ".html"]}
 
 
 # ── WordPress ────────────────────────────────────────────────────────────────
@@ -271,13 +338,53 @@ def _payload(art, status):
 
 
 ADAPTERS = {
-    "manual": (lambda n, t, c: f"папка {t.get('dir') or 'work/ready'}", manual_send),
+    "manual": (manual_check, manual_send),
+    "files": (manual_check, manual_send),
     "wordpress": (wordpress_check, wordpress_send),
     "blogger": (blogger_check, blogger_send),
     "dzen_rss": (dzen_check, dzen_send),
     "webhook": (webhook_check, webhook_send),
     "mcp": (mcp_check, mcp_send),
 }
+
+
+def _sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def find_acceptance(article_path, slug):
+    """Путь к accepted.md: папка статьи (если это work/<slug>/) или work/<slug>/."""
+    folder = os.path.dirname(os.path.abspath(article_path))
+    cands = []
+    if os.path.basename(folder) == slug:
+        cands.append(os.path.join(folder, ACCEPT_FILE))
+    cands.append(os.path.join("work", slug, ACCEPT_FILE))
+    cands.append(os.path.join(folder, ACCEPT_FILE))
+    for c in cands:
+        if os.path.isfile(c):
+            return c
+    return None
+
+
+def check_acceptance(article_path, slug):
+    """(ok, сообщение). ok=True - приёмка есть и хеш (если указан) совпадает."""
+    acc = find_acceptance(article_path, slug)
+    if not acc:
+        return False, (f"нет записи приёмки work/{slug}/{ACCEPT_FILE} (создаётся после accept проверяющего, "
+                       "см. references/process/06-review.md)")
+    text = open(acc, encoding="utf-8").read()
+    hashes = set(h.lower() for h in re.findall(r"(?<![0-9a-fA-F])[0-9a-fA-F]{64}(?![0-9a-fA-F])", text))
+    if hashes:
+        cur = _sha256(article_path)
+        if cur not in hashes:
+            return False, (f"{os.path.basename(article_path)} изменён после приёмки: sha256 {cur[:12]}… нет в {acc}. "
+                           "Любая правка после приёмки снимает её - повторите проверку")
+        return True, f"приёмка: {acc} (sha256 совпадает)"
+    return True, f"приёмка: {acc} (sha256 в нём не указан - сверка версии не выполнена)"
 
 
 def _target(cfg, name):
@@ -291,7 +398,8 @@ def _target(cfg, name):
 
 
 def main():
-    p = argparse.ArgumentParser(description="Публикация статьи")
+    p = argparse.ArgumentParser(description="Публикация статьи", formatter_class=argparse.RawDescriptionHelpFormatter,
+                                epilog=__doc__)
     p.add_argument("--config", default=None)
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list")
@@ -301,7 +409,9 @@ def main():
     s.add_argument("target")
     s.add_argument("article")
     s.add_argument("--status", choices=("draft", "publish"), default="draft")
-    s.add_argument("--slug")
+    s.add_argument("--slug", help="slug статьи (по умолч. из frontmatter, затем имя папки work/<slug>/)")
+    s.add_argument("--force-without-acceptance", action="store_true",
+                   help="публиковать --status publish без work/<slug>/accepted.md (только по прямому решению владельца)")
     r = sub.add_parser("record")
     r.add_argument("target")
     r.add_argument("slug")
@@ -344,17 +454,39 @@ def main():
     meta, title, body, html_body = load_article(a.article)
     if not title:
         raise SystemExit("у статьи нет заголовка: поле title во frontmatter или строка «# Заголовок»")
-    slug = a.slug or meta.get("slug") or _slugify(title)
+    folder = os.path.basename(os.path.dirname(os.path.abspath(a.article)))
+    folder_slug = folder if folder not in ("work", "", ".") and re.fullmatch(r"[a-z0-9][a-z0-9-]*", folder) else None
+    slug = a.slug or meta.get("slug") or folder_slug or _slugify(title)
+    ok, msg = check_acceptance(a.article, slug)
+    if a.status == "publish" and not ok:
+        if not a.force_without_acceptance:
+            print(f"СТОП: публикация без приёмки запрещена - {msg}.\n"
+                  "  Черновик можно отправить: --status draft. Обойти гейт по прямому решению владельца: "
+                  "--force-without-acceptance.", file=sys.stderr)
+            sys.exit(EXIT_GATE)
+        print("!" * 70 + f"\nВНИМАНИЕ: публикация БЕЗ ПРИЁМКИ (--force-without-acceptance): {msg}.\n"
+              "Это отмечено в work/published.json. Сообщите владельцу.\n" + "!" * 70, file=sys.stderr)
+    elif not ok:
+        print(f"Предупреждение: {msg}. Отправляю как черновик (--status draft).", file=sys.stderr)
+    else:
+        print(msg, file=sys.stderr)
     if a.status == "publish" and str(meta.get("status", "")).lower() in ("blocked", "rejected"):
         raise SystemExit("статья помечена как непрошедшая проверку (status во frontmatter) - публикация остановлена")
     led = _ledger()
     known = (led.get(slug, {}).get(a.target) or {}).get("id")
+    raw_text = open(a.article, encoding="utf-8").read().lstrip("\ufeff")
+    fm = re.match(r"^(?:```ya?ml\s*\n)?---\s*\n(.*?)\n---\s*\n", raw_text, re.S)
     art = {"meta": meta, "title": title, "body": body, "html": html_body, "slug": slug, "known_id": known,
-           "description": str(meta.get("meta_description") or meta.get("excerpt") or "")}
+           "description": str(meta.get("meta_description") or meta.get("excerpt") or ""),
+           "frontmatter_raw": fm.group(1) if fm else ""}
     res = ADAPTERS[t["type"]][1](a.target, t, art, a.status, cfg)
     if res is None:
         return
     res["at"] = dt.datetime.now().isoformat(timespec="seconds")
+    res["requested_status"] = a.status
+    res["accepted"] = ok
+    if a.status == "publish" and not ok:
+        res["forced_without_acceptance"] = True
     led.setdefault(slug, {})[a.target] = res
     _save_ledger(led)
     print(f"{a.target}: {res['status']}" + (f" → {res['url']}" if res.get("url") else "") + f" (id {res['id']})")

@@ -1,10 +1,16 @@
 # statejnik.yaml - всё, что специфично для вашего проекта.
-# Скопируйте в рабочую папку как statejnik.yaml и заполните. Ключи - только в .env.
+# Во время первой настройки заполняется как work/statejnik.draft.yaml
+# (скрипты читают его через STATEJNIK_CONFIG) и только в конце настройки
+# переносится в корень рабочей папки как statejnik.yaml.
+# Пока в файле есть example.com, агент считает настройку незаконченной.
+# Ключи - только в .env.
+# Пишите вложенные настройки блоками (как ниже), а не в фигурных скобках {a: 1}:
+# встроенный разборщик без PyYAML понимает только блоки и списки [a, b].
 
 project:
   name: "Название бизнеса"
   domain: "example.com"
-  content_path: "/blog"          # раздел статей на сайте
+  content_path: "/blog"          # раздел статей на сайте; site.py scan берёт его в приоритет
   region: "Россия"
   brands: []                     # ваш бренд и бренды конкурентов (запросы с ними не берём в статьи)
 
@@ -37,7 +43,8 @@ publish:
   default: site                  # площадка по умолчанию
   targets:
     files:
-      type: manual
+      type: manual               # готовые .md и .html в папку; тип files - то же самое
+      dir: work/ready
     # site:
     #   type: wordpress
     #   url: https://example.com
@@ -54,8 +61,20 @@ publish:
     #   server: notion
     #   tool: create-page
 
+report:
+  channel: chat                  # chat - ответ в чате агента + копия work/<slug>/report.md;
+                                 # file - только work/<slug>/report.md
+
 tools:                           # пороги проверок; можно не трогать
-  originality: {max_cosine: 0.5, max_ngram: 0.3, ngram_n: 5}
-  read_aloud: {max_sentence_words: 28, max_word_len: 17, max_consonant_run: 5}
-  cadence: {max_per_1k: 8.0}
-  structure: {min_internal_links: 3}
+  originality:
+    max_cosine: 0.5
+    max_ngram: 0.3
+    ngram_n: 5
+  read_aloud:
+    max_sentence_words: 28
+    max_word_len: 17
+    max_consonant_run: 5
+  cadence:
+    max_per_1k: 8.0
+  structure:
+    min_internal_links: 3        # ориентир; меньше подходящих статей - меньше, с причиной
