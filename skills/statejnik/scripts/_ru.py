@@ -169,13 +169,13 @@ def latin_skeleton(token):
 
 
 def slug_tokens(url_path):
-    """Слова из пути URL: /blog/kak-vybrat-divan/ → [kak, vybrat, divan]."""
+    """Слова из пути URL: /blog/kak-vybrat-kreslo/ → [kak, vybrat, kreslo]."""
     parts = re.split(r"[/\-_.]+", url_path.lower())
     return [latin_skeleton(p) for p in parts if p and not p.isdigit() and p not in ("html", "htm", "php")]
 
 
 def prefix_match(a, b, need=5):
-    """Совпадают ли слова по началу (терпимо к окончаниям): divan ~ divany."""
+    """Совпадают ли слова по началу (терпимо к окончаниям): kreslo ~ kresla."""
     n = min(need, len(a), len(b))
     return n >= 3 and a[:n] == b[:n]
 

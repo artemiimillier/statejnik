@@ -46,7 +46,7 @@ import sys
 import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _config import load_config, find_config, get, as_list  # noqa: E402
+from _config import load_config, find_config, load_for, get, as_list  # noqa: E402
 from _article import split_frontmatter  # noqa: E402
 from _ru import term_matches  # noqa: E402
 
@@ -200,7 +200,7 @@ def main():
         sys.stderr.write(f"нет файла: {args.draft}\n")
         sys.exit(2)
     text = open(args.draft, encoding="utf-8").read()
-    cfg = load_config(args.config or find_config())
+    _, cfg = load_for(args.config, near=args.draft)
     errors, warnings, info = check_structure(text, cfg, args.min_internal)
 
     if args.json:

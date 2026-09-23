@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import concurrent.futures
 import html
 import json
 import os
@@ -39,10 +40,12 @@ import xml.etree.ElementTree as ET
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _net import fetch, decode_body  # noqa: E402
 from _ru import stems, normalize, intent, translit_norm, stem_latin, city_geo  # noqa: E402
-from _config import find_config, load_config, get, as_list  # noqa: E402
+from _config import find_config, load_config, load_for, get, as_list  # noqa: E402
 
 DEFAULT_MAX_URLS = 20000
-DEFAULT_MAX_PAGES = 60
+DEFAULT_MAX_PAGES = 1000
+DEFAULT_WORKERS = 6
+PAGE_TIMEOUT = 15
 EXIT_BLOCKED = 3
 
 # Типичные разделы статей (первый сегмент пути).
@@ -65,10 +68,20 @@ COMMERCE_SEGMENTS = (
 )
 COMMERCE_TITLE = re.compile(r"купить|\bцен[аыу]\b|по низкой цене|в наличии|₽|\bруб\.|интернет-магазин|"
                             r"заказать|распродаж", re.I)
+# Для страниц из раздела статей «купить» в заголовке ещё не коммерция («Какую миску купить кошке»):
+# коммерческими их делает только явный признак витрины.
+COMMERCE_TITLE_STRONG = re.compile(r"купить\b.{0,40}\b(в интернет-магазине|с доставкой|недорого|по цене)|"
+                                   r"по низкой цене|в наличии|₽|\bруб\.|интернет-магазин|распродаж", re.I)
 NON_ARTICLE = set(COMMERCE_SEGMENTS) | {"about", "contacts", "kontakty", "o-kompanii", "delivery", "dostavka",
                                         "oplata", "payment", "b2b", "static-page", "site", "help", "policy",
                                         "privacy", "vacancy", "vakansii", "sitemap", "en", "ru"}
-LISTING_SEGMENTS = ("category", "categories", "tag", "tags", "page", "author", "rubric", "rubrika", "archive")
+LISTING_SEGMENTS = ("category", "categories", "tag", "tags", "page", "author", "rubric", "rubrika", "archive",
+                    "arhiv", "archives")
+# Акции, распродажи, промо - в любом месте пути (например /news/actions/...): не статьи.
+PROMO_SEGMENTS = ("actions", "action", "akcii", "akciya", "akcija", "aktsii", "akcii-skidki", "sale", "sales",
+                  "promo", "promos", "promotions", "rasprodazha", "skidki", "discounts", "offers", "specpredlozheniya")
+LISTING_TITLE = re.compile(r"^\s*(акци[ияй]\b|скидки|распродаж|архив|все статьи|страница \d+|page \d+|"
+                           r"результаты поиска)|\bстраница \d+ из\b", re.I)
 
 ANTIBOT = re.compile(r"variti|ddos-guard|cf-chl|cf_chl|challenge-platform|checking your browser|"
                      r"captcha|__js_p_|antibot|servicepipe|qrator|доступ ограничен|не робот|"
@@ -123,8 +136,32 @@ def parse_page(doc):
     heads = [_text(h) for h in re.findall(r"(?is)<h[1-3][^>]*>(.*?)</h[1-3]>", doc)]
     heads = [h for h in heads if 2 < len(h) < 200][:40]
     h1 = one(r"<h1[^>]*>(.*?)</h1>")
+    og = ""
+    m = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]*content=["\']([^"\']*)', doc, re.I) or \
+        re.search(r'<meta[^>]+content=["\']([^"\']*)["\'][^>]*property=["\']og:title', doc, re.I)
+    if m:
+        og = html.unescape(m.group(1)).strip()
     body = _text(doc)
-    return {"title": title, "description": desc, "h1": h1, "headings": heads, "text": body[:6000]}
+    return {"title": title, "description": desc, "h1": h1, "og_title": og, "headings": heads, "text": body[:6000]}
+
+
+def assign_headings(pages):
+    """Поле heading - настоящий заголовок страницы для сверки с запросами.
+
+    Если один и тот же title стоит у многих статей (например, у всех «Статьи»),
+    это заголовок раздела, а не статьи: берём h1, иначе og:title."""
+    arts = [p for p in pages if p.get("kind") == "article"]
+    cnt = collections.Counter((p.get("title") or "").strip().lower() for p in arts)
+    lim = max(3, int(0.1 * len(arts)))
+    generic = {t for t, n in cnt.items() if t and n >= lim}
+    for p in pages:
+        t = (p.get("title") or "").strip()
+        if not t or t.lower() in generic:
+            p["heading"] = p.get("h1") or p.get("og_title") or t
+            p["title_generic"] = bool(t)
+        else:
+            p["heading"] = t
+    return generic
 
 
 # ── домены, пути, регионы ────────────────────────────────────────────────────
@@ -134,7 +171,7 @@ def _host(url):
 
 
 def base_domain(host):
-    """Грубый регистрируемый домен: spb.divan.ru → divan.ru, www.a.co.uk → a.co.uk."""
+    """Грубый регистрируемый домен: spb.shop.ru → shop.ru, www.a.co.uk → a.co.uk."""
     parts = (host or "").lower().strip(".").split(".")
     if len(parts) >= 3 and parts[-2] in ("co", "com", "org", "net", "msk", "spb") and len(parts[-1]) == 2:
         return ".".join(parts[-3:])
@@ -233,12 +270,29 @@ def in_sections(url, sections):
 
 
 def is_listing(url, sections):
-    """Страница-список раздела (сам раздел, категория, тег, пагинация), а не статья."""
+    """Страница-список раздела (сам раздел, категория, тег, пагинация, акции), а не статья."""
     p = _path(url).lower()
     if any(p == s for s in sections):
         return True
     segs = _segments(url)
+    if any(s in PROMO_SEGMENTS for s in segs):
+        return True
     return any(s in LISTING_SEGMENTS for s in segs[1:]) or bool(re.fullmatch(r"page-?\d+|\d{1,3}", segs[-1]))
+
+
+def drop_parent_listings(urls):
+    """Убрать «корни подразделов»: адрес, под которым лежат 3+ других статьи
+    (/encyclopedia/cats/ при /encyclopedia/cats/<порода>/), - это страница-список."""
+    paths = [_path(u).rstrip("/") for u in urls]
+    kids = collections.Counter()
+    for p in paths:
+        parts = p.split("/")
+        for i in range(2, len(parts)):
+            kids["/".join(parts[:i])] += 1
+    keep, dropped = [], []
+    for u, p in zip(urls, paths):
+        (dropped if kids.get(p, 0) >= 3 else keep).append(u)
+    return keep, dropped
 
 
 def is_commerce_url(url):
@@ -247,6 +301,8 @@ def is_commerce_url(url):
         return True
     segs = _segments(url)
     if segs and segs[0] in COMMERCE_SEGMENTS:
+        return True
+    if any(s in PROMO_SEGMENTS for s in segs):
         return True
     if len(segs) > 1 and segs[1] in COMMERCE_SEGMENTS and segs[0] not in ARTICLE_SECTIONS:
         return True
@@ -360,8 +416,70 @@ def blocked_reason(status, doc, base, final):
     return None
 
 
+def read_pages(order, art_set, allow_private=False, workers=DEFAULT_WORKERS, timeout=PAGE_TIMEOUT):
+    """Прочитать страницы параллельно (вежливо: несколько потоков, короткий таймаут).
+    Порядок результата = порядок order; недоступные страницы пропускаются."""
+    def one(u):
+        st, d, _ = _get(u, allow_private, timeout=timeout)
+        if st != 200:
+            return None
+        pg = parse_page(d)
+        return {"url": u, "title": pg["title"], "h1": pg["h1"], "og_title": pg["og_title"],
+                "kind": "article" if u in art_set else "other"}
+    out = [None] * len(order)
+    workers = max(1, min(int(workers or 1), 16))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = {ex.submit(one, u): i for i, u in enumerate(order)}
+        done = 0
+        for fut in concurrent.futures.as_completed(futs):
+            done += 1
+            try:
+                out[futs[fut]] = fut.result()
+            except Exception as e:  # noqa: BLE001 - одна страница не должна ронять скан
+                _log(f"  ! {order[futs[fut]]}: {e}")
+            if len(order) > 200 and done % 200 == 0:
+                _log(f"  ... прочитано {done}/{len(order)}")
+    return [p for p in out if p]
+
+
+def reclassify_pages(pages):
+    """После чтения: какие «статьи» на деле списки, акции или коммерция.
+
+    - title/h1 с «купить», «цена», «интернет-магазин»... - коммерция;
+    - заголовок вида «Акции», «Архив», «Страница 2» - список;
+    - один и тот же заголовок (h1/heading) у 3+ страниц - заголовок раздела, значит это списки;
+    - раздел без h1 почти на всех прочитанных страницах (подборки товаров) - не статьи.
+    Меняет kind на "other" и возвращает список отсеянных адресов."""
+    arts = [p for p in pages if p.get("kind") == "article"]
+    heads = collections.Counter((p.get("heading") or "").strip().lower() for p in arts)
+    by_sec = collections.defaultdict(list)
+    for p in arts:
+        segs = _segments(p["url"])
+        by_sec[segs[0] if segs else ""].append(p)
+    no_h1_secs = {sec for sec, ps in by_sec.items()
+                  if len(ps) >= 5 and sum(1 for p in ps if not (p.get("h1") or "").strip()) >= 0.8 * len(ps)}
+    dropped = []
+    for p in arts:
+        head = (p.get("heading") or "").strip()
+        segs = _segments(p["url"])
+        why = None
+        if COMMERCE_TITLE_STRONG.search(" ".join([head, p.get("h1", "")])):
+            why = "commerce_title"
+        elif LISTING_TITLE.search(head):
+            why = "listing_title"
+        elif head and heads[head.lower()] >= 3:
+            why = "same_heading"
+        elif (segs[0] if segs else "") in no_h1_secs:
+            why = "no_h1_section"
+        if why:
+            p["kind"] = "other"
+            p["not_article"] = why
+            dropped.append(p["url"])
+    return dropped
+
+
 def cmd_scan(a):
-    cfg = load_config(find_config(a.config))
+    _, cfg = load_for(a.config, near=a.out)
     base = a.url if "://" in a.url else "https://" + a.url
     status, doc, final = _get(base, a.allow_private)
     reason = blocked_reason(status, doc, base, final)
@@ -403,6 +521,7 @@ def cmd_scan(a):
     sections = detect_sections(urls, content_paths)
     sec_list = list(sections)
     articles = [u for u in urls if is_article_url(u, sec_list)]
+    articles, parents = drop_parent_listings(articles)
     art_set = set(articles)
     urls = articles + [u for u in urls if u not in art_set]
 
@@ -411,12 +530,17 @@ def cmd_scan(a):
         order = [u for u in articles if in_sections(u, known)] + [u for u in articles if not in_sections(u, known)]
         if len(order) < max_pages:
             order += [u for u in urls if u not in art_set and not is_commerce_url(u)][: max_pages - len(order)]
-        for u in order[:max_pages]:
-            st, d, _ = _get(u, a.allow_private)
-            if st == 200:
-                pg = parse_page(d)
-                pages.append({"url": u, "title": pg["title"], "h1": pg["h1"],
-                              "kind": "article" if u in art_set else "other"})
+        order = order[:max_pages]
+        if len(order) > 100:
+            _log(f"  читаю заголовки {len(order)} страниц в {a.workers} потоков (таймаут {a.page_timeout} с)...")
+        pages = read_pages(order, art_set, a.allow_private, a.workers, a.page_timeout)
+    generic = assign_headings(pages)
+    not_articles = reclassify_pages(pages)
+    if not_articles:
+        drop = set(not_articles)
+        articles = [u for u in articles if u not in drop]
+        art_set = set(articles)
+        urls = articles + [u for u in urls if u not in art_set]
 
     sec_counts = collections.Counter()
     for u in articles:
@@ -429,6 +553,8 @@ def cmd_scan(a):
         "article_sections": [{"path": s, "source": sections[s], "articles": sec_counts.get(s, 0)} for s in sec_list],
         "article_count": len(articles), "article_urls": articles, "pages": pages,
         "regional": reg, "sitemap_info": info, "content_path": content_paths, "max_urls": max_urls,
+        "not_articles": {"parent_listings": parents, "by_page": not_articles},
+        "generic_titles": sorted(generic),
     }
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     with open(a.out, "w", encoding="utf-8") as f:
@@ -443,8 +569,16 @@ def cmd_scan(a):
     secs = ", ".join(f"{s['path']} - {s['articles']} ({s['source']})"
                      for s in result["article_sections"] if s["articles"])
     print(f"  Статейных URL: {len(articles)}" + (f"; разделы: {secs}" if secs else ""))
-    print(f"  Прочитано страниц: {len(pages)} (статей среди них: {sum(1 for p in pages if p['kind'] == 'article')})."
-          f" → {a.out}")
+    n_art_pages = sum(1 for p in pages if p["kind"] == "article")
+    print(f"  Прочитано страниц: {len(pages)} (статей среди них: {n_art_pages}).  → {a.out}")
+    if parents or not_articles:
+        print(f"  Отсеяно как списки/акции/коммерция: {len(parents) + len(not_articles)} "
+              "(см. not_articles в JSON)")
+    if generic:
+        print(f"  Одинаковый title у многих статей ({', '.join(sorted(generic))[:80]}) - заголовки взяты из h1/og:title.")
+    if len(articles) - n_art_pages > max(5, 0.05 * len(articles)):
+        _log(f"  ! заголовки прочитаны у {n_art_pages} из {len(articles)} статей: остальные gap сверит только по адресу. "
+             f"Нужны все - увеличьте --max-pages (сейчас {max_pages}).")
     if info["truncated"]:
         _log(f"  ! достигнут лимит --max-urls {max_urls}: часть НЕстатейных URL не записана "
              "(статейные собраны все). Нужен полный список - увеличьте --max-urls.")
@@ -475,14 +609,22 @@ def is_commercial_phrase(phrase, brands=()):
     return intent(p, brands) in ("commercial", "navigational")
 
 
-def classify_page(page, sections):
+def classify_page(page, sections, article_set=None):
     """article | commerce | other. Товары, категории, фильтры и страницы с «купить/цена»
-    в заголовке покрытием информационного запроса не считаются."""
+    в заголовке покрытием информационного запроса не считаются. article_set - список статей
+    из скана (site.json → article_urls): если он есть, статья - только адрес из него."""
     url = page.get("url", "")
-    title = " ".join([page.get("title", ""), page.get("h1", "")])
-    if is_commerce_url(url) or COMMERCE_TITLE.search(title):
+    if page.get("not_article"):
+        return "commerce" if page["not_article"] == "commerce_title" else "other"
+    title = " ".join([page.get("heading") or page.get("title", ""), page.get("h1", "")])
+    if article_set is not None:
+        in_art = url in article_set
+    else:
+        in_art = page.get("kind") == "article" or bool(sections and is_article_url(url, sections))
+    listed = article_set is not None and in_art   # скан уже отнёс адрес к статьям - адресу доверяем
+    if (is_commerce_url(url) and not listed) or (COMMERCE_TITLE_STRONG if in_art else COMMERCE_TITLE).search(title):
         return "commerce"
-    if page.get("kind") == "article" or (sections and is_article_url(url, sections)):
+    if in_art:
         return "article"
     segs = _segments(url)
     if not sections and segs and _wordy(segs[-1]):
@@ -508,23 +650,74 @@ def _skel_match(a, b):
     return b.startswith(a) or (len(b) >= 4 and a.startswith(b))
 
 
-def match_score(phrase_stems, page):
-    """Оценка 0..1: доля основ запроса, найденных в title/H1 (по основам Snowball) или
-    в последнем сегменте адреса (по нормализованному транслиту: lucse ~ luchshe)."""
+# Слова намерения, а не темы: «лучше», «выбрать», «быстро»... - малый вес при сверке.
+_MODIFIER_WORDS = ("лучше лучший лучшая лучшие выбрать выбор выбирать правильно правильный быстро быстрый "
+                   "самый хороший хорошая топ рейтинг совет советы делать сделать начать первый первые "
+                   "надо нужен нужна нужны правила способ способы виды какую чего")
+MODIFIER_STEMS = frozenset(stems(_MODIFIER_WORDS))
+W_MODIFIER = 0.3
+W_COMMON = 0.5      # слово ниши, которое есть в четверти запросов и чаще (кошка, диван)
+
+
+def stem_eq(a, b):
+    """Основы совпадают с учётом беглой гласной и хвостов: лоток~лотк, котенок~котенк, кошк~кошек."""
+    if a == b:
+        return True
+    short, long_ = (a, b) if len(a) <= len(b) else (b, a)
+    if len(short) < 3:
+        return False
+    if long_.startswith(short) and len(long_) - len(short) <= 3:
+        return True
+    n = 0
+    while n < len(short) and short[n] == long_[n]:
+        n += 1
+    return n >= 3 and n >= len(short) - 1 and len(long_) - n <= 2
+
+
+def page_heading(page):
+    return page.get("heading") or page.get("h1") or page.get("title") or ""
+
+
+def match_score(phrase_stems, page, weights=None):
+    """Оценка 0..1: взвешенная доля основ запроса, найденных в заголовке страницы
+    (heading/h1/title, по основам с учётом беглых гласных) или в последнем сегменте
+    адреса (по нормализованному транслиту: lucse ~ luchshe). Слова намерения и самые
+    частые слова ниши весят меньше - совпадение по «кошка» и «лучше» темы не закрывает."""
     if not phrase_stems:
         return 0.0
-    words = stems(" ".join([page.get("title", ""), page.get("h1", "")]))
-    t_score = len(phrase_stems & words) / len(phrase_stems)
+    weights = weights or {}
+    w = {s: weights.get(s, 1.0) for s in phrase_stems}
+    total = sum(w.values()) or 1.0
+    words = stems(" ".join([page_heading(page), page.get("h1", "") if page.get("heading") else ""]))
+    t_hit = sum(w[s] for s in phrase_stems if any(stem_eq(s, x) for x in words))
     slug = _slug_skeletons(page.get("url", ""))
-    s_score = 0.0
+    s_hit = 0.0
     if slug:
-        hit = sum(1 for s in phrase_stems if any(_skel_match(stem_latin(s), t) for t in slug))
-        s_score = hit / len(phrase_stems)
-    return round(max(t_score, s_score), 2)
+        s_hit = sum(w[s] for s in phrase_stems if any(_skel_match(stem_latin(s), t) for t in slug))
+    return round(max(t_hit, s_hit) / total, 2)
+
+
+def stem_weights(keywords):
+    """Веса основ: слова намерения - W_MODIFIER, слова из 25%+ запросов - W_COMMON, прочие - 1."""
+    df = collections.Counter()
+    n = 0
+    for k in keywords:
+        n += 1
+        for st in stems(k.get("phrase", "")):
+            df[st] += 1
+    w = {}
+    for st, c in df.items():
+        if st in MODIFIER_STEMS:
+            w[st] = W_MODIFIER
+        elif n >= 20 and c / n >= 0.25:
+            w[st] = W_COMMON
+    for st in MODIFIER_STEMS:
+        w.setdefault(st, W_MODIFIER)
+    return w
 
 
 def cmd_gap(a):
-    cfg = load_config(find_config(a.config))
+    _, cfg = load_for(a.config, near=a.site)
     site = json.load(open(a.site, encoding="utf-8"))
     kws = json.load(open(a.keywords, encoding="utf-8"))
     brands = as_list(get(cfg, "project.brands", []))
@@ -532,14 +725,19 @@ def cmd_gap(a):
     pages = list(site.get("pages") or [])
     seen = {p["url"] for p in pages}
     pages += [{"url": u, "title": "", "h1": ""} for u in site.get("urls", []) if u not in seen]
+    if pages and not any("heading" in p for p in pages):  # site.json старого формата
+        assign_headings(pages)
     kinds = collections.Counter()
     pool = {"article": [], "other": []}
+    art_set = set(site["article_urls"]) if isinstance(site.get("article_urls"), list) else None
     for p in pages:
-        k = classify_page(p, sections)
+        k = classify_page(p, sections, art_set)
         kinds[k] += 1
         if k != "commerce":
             p["_kind"] = k
             pool[k].append(p)
+    art_with_head = sum(1 for p in pool["article"] if page_heading(p))
+    weights = stem_weights(kws)
 
     clusters, commercial = collections.OrderedDict(), collections.OrderedDict()
     for k in kws:
@@ -566,16 +764,19 @@ def cmd_gap(a):
         best, best_score = None, 0.0
         for kind in ("article", "other"):
             for p in pool[kind]:
-                sc = match_score(st, p)
+                sc = match_score(st, p, weights)
                 if sc > best_score:
                     best, best_score = p, sc
             if best_score >= a.threshold:
                 break
         cover = best["url"] if best is not None and best_score >= a.threshold else None
+        maybe = (not cover and best is not None and best["_kind"] == "article" and best_score >= a.maybe
+                 and bool(page_heading(best)))
         demand = c["volume"] if c["volume"] else 10 * len(c["sources"]) * len(c["phrases"])
         rows.append({"cluster": c["cluster"], "phrases": c["phrases"][:12], "volume": c["volume"] or None,
                      "article_type": c["type"], "fit": c["fit"], "covered_by": cover,
-                     "nearest": ({"url": best["url"], "title": best.get("title") or best.get("h1") or "",
+                     "maybe_covered": maybe,
+                     "nearest": ({"url": best["url"], "title": page_heading(best),
                                   "score": best_score, "kind": best["_kind"]} if best is not None else None),
                      "score": round(demand * c["fit"] * (0.15 if cover else 1.0), 1)})
     rows.sort(key=lambda r: -r["score"])
@@ -586,11 +787,16 @@ def cmd_gap(a):
               "clusters": rows, "commercial": comm}
     with open(a.out, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=1)
-    todo = [r for r in rows if not r["covered_by"] and r["fit"] >= 0.7][: a.top]
+    todo = [r for r in rows if not r["covered_by"] and not r["maybe_covered"] and r["fit"] >= 0.7][: a.top]
+    maybe_rows = [r for r in rows if r["maybe_covered"] and r["fit"] >= 0.7]
     covered = sum(1 for r in rows if r["covered_by"])
     print(f"Кластеров под статьи: {len(rows)}, уже покрыты сайтом: {covered}, в план: {len(todo)}; "
           f"коммерческих групп отложено: {len(comm)}. Статей сайта для сверки: {kinds['article']}, "
-          f"товаров/категорий пропущено: {kinds['commerce']}. → {a.out}")
+          f"товаров/категорий пропущено: {kinds['commerce']}; похоже на занятые (проверить): {len(maybe_rows)}. → {a.out}")
+    if pool["article"] and art_with_head < 0.8 * len(pool["article"]):
+        _log(f"  ! заголовки есть только у {art_with_head} из {len(pool['article'])} статей сайта: остальные сверены "
+             "лишь по адресу (транслит, английские адреса дают ложные «не покрыто»). "
+             "Пересканируйте: site.py scan ... --max-pages <число статей>.")
     if not kinds["article"]:
         _log("  ! среди страниц сайта нет статей - покрытие почти наверняка занижено. "
              "Пересканируйте с --content-path (site.py scan --help).")
@@ -599,7 +805,8 @@ def cmd_gap(a):
             n = r["nearest"]
             if not n or n["score"] < 0.3:
                 return "-"
-            return f"{n['url']} ({n['score']:.2f})"
+            t = (n.get("title") or "")[:70]
+            return (f"«{t}» " if t else "") + f"{n['url']} ({n['score']:.2f})"
         lines = ["# План статей (черновик)", "",
                  f"Сайт: {site.get('url')}. Кластеров под статьи: {len(rows)}, уже есть на сайте: {covered} "
                  f"(порог совпадения {a.threshold}). Коммерческие запросы - в конце, в план не входят.",
@@ -611,8 +818,11 @@ def cmd_gap(a):
         for i, r in enumerate(todo, 1):
             extra = "; ".join(p for p in r["phrases"][:6] if p != r["cluster"])[:200]
             lines.append(f"| {i} | {r['cluster']} | {r['article_type']} | {r['volume'] or '-'} | {near(r)} | {extra} |")
+        if maybe_rows:
+            lines += ["", f"## Похоже на занятые - открыть статью и решить (порог {a.maybe}-{a.threshold})", ""]
+            lines += [f"- {r['cluster']} → {near(r)}" for r in maybe_rows[:40]]
         lines += ["", "## Уже покрыто сайтом (не дублировать, можно обновить)", ""]
-        lines += [f"- {r['cluster']} → {r['covered_by']} ({r['nearest']['score']:.2f})"
+        lines += [f"- {r['cluster']} → «{(r['nearest'].get('title') or '')[:70]}» {r['covered_by']} ({r['nearest']['score']:.2f})"
                   for r in rows if r["covered_by"]][:40]
         if comm:
             lines += ["", "## Коммерческие запросы (не для статей: карточки, категории, города)", ""]
@@ -640,7 +850,11 @@ def main():
                         "или tools.site.max_urls). Статейные URL собираются всегда")
     s.add_argument("--max-pages", type=int, default=None,
                    help=f"сколько страниц открыть ради заголовков, статьи - первыми (по умолч. {DEFAULT_MAX_PAGES} "
-                        "или tools.site.max_pages)")
+                        "или tools.site.max_pages). Для gap нужны заголовки всех статей")
+    s.add_argument("--workers", type=int, default=DEFAULT_WORKERS,
+                   help=f"сколько страниц читать параллельно (по умолч. {DEFAULT_WORKERS}, максимум 16)")
+    s.add_argument("--page-timeout", type=int, default=PAGE_TIMEOUT,
+                   help=f"таймаут одной страницы, с (по умолч. {PAGE_TIMEOUT})")
     s.add_argument("--allow-private", action="store_true", help="разрешить внутренние адреса (локальный сайт)")
     s.add_argument("--config", default=None, help="путь к statejnik.yaml (по умолч. ./statejnik.yaml)")
     g = sub.add_parser("gap", help="сверить ключи с сайтом и собрать план")
@@ -652,6 +866,8 @@ def main():
     g.add_argument("--threshold", type=float, default=0.75,
                    help="доля основ запроса в заголовке/адресе статьи, при которой тема считается покрытой "
                         "(по умолч. 0.75)")
+    g.add_argument("--maybe", type=float, default=0.6,
+                   help="с какой оценки тема попадает в раздел «похоже на занятые» вместо плана (по умолч. 0.6)")
     g.add_argument("--config", default=None, help="путь к statejnik.yaml (для project.brands)")
     a = p.parse_args()
     cmd_scan(a) if a.cmd == "scan" else cmd_gap(a)

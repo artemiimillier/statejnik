@@ -9,10 +9,19 @@ claims-check.py - механическая проверка реестра фа�
 
 Что проверяет (схема - references/process/05-write.md, «Реестр фактов»):
   1. Структура: объект {slug, updated, claims: [...]}; у каждой записи поля
-     id, claim, where (список), kind, source_url, source_file, quote, checked_at,
-     status; необязательные version, conditions, reason. id уникальны.
+     id, claim, where (список), kind, checked_at, status; для записей-фактов ещё
+     source_url, source_file, quote; необязательные version, conditions, reason.
+     id уникальны.
   2. kind - fact | number | price | limit | date | version | availability | command |
      quote | person | comparison | promise; status - verified | limited | unverified | removed.
+     where - список мест в статье: заголовок раздела H2 как в тексте («## Материал»
+     или «Материал»), H1 («# ...»), имя служебного поля (title, meta_description,
+     hero_promise, excerpt, cta...) или «вводная часть» (текст до первого H2).
+     С --text места сверяются с реальными заголовками текста.
+  2a. Редакционный вывод (kind promise или comparison, плюс поле basis - список id
+     опорных записей): quote, source_url и source_file не нужны; basis обязателен,
+     каждый id из basis должен существовать и быть verified/limited.
+     Пример: {"id": "C23", "kind": "promise", "basis": ["C8", "C11"], ...}
   3. Для verified/limited: source_file существует (путь от work/<slug>/), quote
      непустой и ДОСЛОВНО встречается в source_file. Допускается только разница в
      пробелах (переносы строк, двойные пробелы, неразрывный пробел) - это
@@ -49,10 +58,15 @@ KINDS = ("fact", "number", "price", "limit", "date", "version", "availability", 
          "quote", "person", "comparison", "promise")
 STATUSES = ("verified", "limited", "unverified", "removed")
 REQUIRED = ("id", "claim", "where", "kind", "source_url", "source_file", "quote", "checked_at", "status")
-OPTIONAL = ("version", "conditions", "reason", "note", "notes", "sources", "source_title")
-WHERE = ("body", "h1", "title", "title_variants", "meta_title", "meta_description", "excerpt",
-         "hero_promise", "cta", "caption", "image", "alt", "code", "table", "faq", "toc", "lead",
-         "sources", "frontmatter", "slug", "cta_offer")
+INFERENCE_KINDS = ("promise", "comparison")       # редакционный вывод - с basis вместо quote
+INFERENCE_REQUIRED = ("id", "claim", "where", "kind", "basis", "checked_at", "status")
+OPTIONAL = ("version", "conditions", "reason", "note", "notes", "sources", "source_title", "basis")
+# Служебные поля и особые места статьи (всё остальное в where - заголовок раздела).
+FIELD_WHERE = ("h1", "title", "title_variants", "meta_title", "meta_description", "description", "excerpt",
+               "hero_promise", "cta", "cta_offer", "cta_url", "caption", "image", "alt", "code", "table", "faq",
+               "toc", "lead", "sources", "frontmatter", "slug", "target_keyword", "intro", "вводная часть",
+               "вводная", "лид", "подпись", "таблица")
+BAD_WHERE = ("body", "text", "текст", "тело")    # слишком общее: не говорит, где утверждение
 TRACKING = re.compile(r"^(utm_\w+|yclid|gclid|fbclid|_openstat|from|ref|referrer|clid|mc_cid|mc_eid|ysclid)$", re.I)
 WS = re.compile(r"[\s\u00a0\u202f\u2007\u2009\u200b\ufeff]+")
 
@@ -85,8 +99,49 @@ def resolve_source(work, source_file):
     return None
 
 
-def check_claims(work, claims_path, today=None):
-    """Вернуть (errors, warnings, rows). errors/warnings - списки строк."""
+def norm_heading(s):
+    """«## Материал и уход» / «Материал и уход» / «материал  и уход» → «материал и уход»."""
+    s = re.sub(r"^\s*#{1,6}\s*", "", str(s or ""))
+    s = s.replace("ё", "е").replace("Ё", "Е")
+    return ws_norm(re.sub(r"[*_`]", "", s)).strip(" .:").lower()
+
+
+def text_headings(paths):
+    """Заголовки H1-H6 из текстов статьи (вне блоков кода) - нормализованные."""
+    out = set()
+    for p in paths or []:
+        try:
+            t = open(p, encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        t = re.sub(r"(?s)```.*?```", " ", t)
+        for m in re.finditer(r"(?m)^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", t):
+            out.add(norm_heading(m.group(1)))
+    return out
+
+
+def where_problem(w, headings=None):
+    """None, если место допустимо; иначе текст замечания."""
+    raw = str(w or "").strip()
+    if not raw:
+        return "пустое место"
+    low = raw.lower()
+    key = low.split(":")[0].split(".")[0].strip()
+    if key in BAD_WHERE:
+        return f"«{raw}» - слишком общее место: укажите заголовок раздела H2 или служебное поле"
+    if key in FIELD_WHERE or low in FIELD_WHERE:
+        return None
+    if re.fullmatch(r"(строка|line)\s*\d+.*|\d+", low):
+        return f"«{raw}» - номер строки уплывает при правке: укажите заголовок раздела"
+    if headings is not None and norm_heading(raw) not in headings:
+        return f"«{raw}» - такого заголовка нет в тексте (переименовали раздел?)"
+    return None
+
+
+def check_claims(work, claims_path, today=None, headings=None):
+    """Вернуть (errors, warnings, rows). errors/warnings - списки строк.
+
+    headings - множество нормализованных заголовков текста (из --text) для сверки where."""
     today = today or dt.date.today()
     errors, warnings, rows = [], [], []
     with open(claims_path, encoding="utf-8") as f:
@@ -109,6 +164,7 @@ def check_claims(work, claims_path, today=None):
         return errors, warnings, rows
 
     seen, cache = {}, {}
+    by_id = {str(c.get("id")): c for c in claims if isinstance(c, dict) and c.get("id")}
     for n, c in enumerate(claims, 1):
         if not isinstance(c, dict):
             errors.append(f"запись #{n}: не объект")
@@ -128,7 +184,12 @@ def check_claims(work, claims_path, today=None):
             err(f"id повторяется (уже был в записи #{seen[cid]})")
         seen[cid] = n
         status = c.get("status")
-        missing = [k for k in REQUIRED if k not in c]
+        kind = c.get("kind")
+        inference = kind in INFERENCE_KINDS and "basis" in c
+        missing = [k for k in (INFERENCE_REQUIRED if inference else REQUIRED) if k not in c]
+        if kind in INFERENCE_KINDS and "basis" not in c and not str(c.get("quote") or "").strip():
+            missing = [k for k in missing if k not in ("source_url", "source_file", "quote")] + ["basis"]
+            inference = True
         if status == "removed":
             missing = [k for k in missing if k in ("id", "claim", "status")]
         if missing:
@@ -138,17 +199,17 @@ def check_claims(work, claims_path, today=None):
             warn("неизвестные поля: " + ", ".join(extra))
         if status not in STATUSES:
             err(f"status «{status}» не из допустимых: {', '.join(STATUSES)}")
-        kind = c.get("kind")
         if kind is not None and kind not in KINDS:
             err(f"kind «{kind}» не из допустимых: {', '.join(KINDS)}")
         where = c.get("where")
         if where is not None and not isinstance(where, list):
-            err("where должен быть списком мест в статье, например [\"body\", \"meta_description\"]")
+            err("where должен быть списком мест в статье, например [\"## Какой размер выбрать\", \"meta_description\"]")
             where = [where]
         where = where or []
-        unknown_where = [w for w in where if str(w).split(":")[0].split(".")[0] not in WHERE]
-        if unknown_where:
-            warn("непривычные значения where: " + ", ".join(map(str, unknown_where)))
+        for w in where:
+            prob = where_problem(w, headings)
+            if prob:
+                warn("where: " + prob)
         if not str(c.get("claim") or "").strip():
             err("пустой claim")
 
@@ -166,6 +227,27 @@ def check_claims(work, claims_path, today=None):
             continue
 
         # verified / limited
+        if inference:
+            basis = c.get("basis")
+            if isinstance(basis, str):
+                basis = [x.strip() for x in re.split(r"[,;\s]+", basis) if x.strip()]
+            if not isinstance(basis, list) or not basis:
+                err("редакционный вывод (kind " + str(kind) + ") без basis - перечислите id опорных записей, "
+                    "например \"basis\": [\"C3\", \"C7\"]")
+                continue
+            for b in basis:
+                ref = by_id.get(str(b))
+                if ref is None:
+                    err(f"basis ссылается на несуществующую запись {b}")
+                elif ref is c:
+                    err("basis ссылается на саму запись")
+                elif ref.get("status") not in ("verified", "limited"):
+                    err(f"basis: опора {b} со статусом {ref.get('status')} - вывод не может быть шире опор")
+            row["found"] = "basis"
+            if str(c.get("quote") or "").strip() and str(c.get("source_file") or "").strip():
+                pass  # есть и своя цитата - проверим её ниже как обычно
+            else:
+                continue
         url = str(c.get("source_url") or "")
         parts = urllib.parse.urlsplit(url)
         if parts.scheme not in ("http", "https") or not parts.netloc:
@@ -304,16 +386,17 @@ def main():
     if not os.path.isfile(claims_path):
         print(f"нет файла {claims_path}", file=sys.stderr)
         sys.exit(2)
-    try:
-        errors, warnings, rows = check_claims(work, claims_path)
-    except ValueError as e:
-        print(f"{claims_path}: не JSON ({e})", file=sys.stderr)
-        sys.exit(2)
-    missing = []
     for t in a.text:
         if not os.path.isfile(t):
             print(f"нет файла {t}", file=sys.stderr)
             sys.exit(2)
+    headings = text_headings(a.text) if a.text else None
+    try:
+        errors, warnings, rows = check_claims(work, claims_path, headings=headings)
+    except ValueError as e:
+        print(f"{claims_path}: не JSON ({e})", file=sys.stderr)
+        sys.exit(2)
+    missing = []
     if a.text:
         missing = check_text(a.text, claims_path, a.all_numbers)
     fail = bool(errors) or (a.strict_text and bool(missing))

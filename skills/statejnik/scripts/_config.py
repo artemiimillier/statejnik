@@ -46,12 +46,61 @@ SCHEMA = {
 }
 
 
-def find_config(explicit=None):
-    """Найти конфиг: явный путь → $STATEJNIK_CONFIG → ./statejnik.yaml в рабочей папке."""
+PLACEHOLDER_DOMAINS = ("example.com", "example.ru", "example.org", "www.example.com")
+
+
+def find_config(explicit=None, near=None):
+    """Найти конфиг: явный путь → $STATEJNIK_CONFIG → ./statejnik.yaml → вверх от `near`.
+
+    `near` - файл или папка аргумента (например work/<slug>/draft.md): если скрипт
+    запущен не из рабочей папки, statejnik.yaml ищется в родительских папках файла.
+    """
     for c in (explicit, os.environ.get("STATEJNIK_CONFIG"), os.path.join(os.getcwd(), CONFIG_NAME)):
         if c and os.path.isfile(c):
             return c
+    if near:
+        d = os.path.abspath(near)
+        if not os.path.isdir(d):
+            d = os.path.dirname(d)
+        while True:
+            c = os.path.join(d, CONFIG_NAME)
+            if os.path.isfile(c):
+                return c
+            parent = os.path.dirname(d)
+            if parent == d:
+                break
+            d = parent
     return None
+
+
+def load_for(explicit=None, near=None, warn=True):
+    """(путь, cfg) для скрипта. Конфиг не найден - одна строка предупреждения в stderr.
+
+    Без конфига скрипты работают на значениях по умолчанию: домен сайта, запретные
+    слова и пороги проекта не учитываются (внутренние ссылки не распознаются и т. п.).
+    """
+    path = find_config(explicit, near)
+    if explicit and not path:
+        print(f"предупреждение: конфиг {explicit} не найден - работаю без statejnik.yaml "
+              "(значения по умолчанию)", file=sys.stderr)
+    elif not path and warn:
+        print("предупреждение: statejnik.yaml не найден (ни в текущей папке, ни выше папки файла, "
+              "ни в $STATEJNIK_CONFIG) - работаю на значениях по умолчанию; запускайте из рабочей папки",
+              file=sys.stderr)
+    return path, load_config(path, warn=warn)
+
+
+def is_placeholder_domain(domain):
+    d = str(domain or "").strip().lower()
+    d = re.sub(r"^https?://", "", d).split("/")[0]
+    return d.startswith("www.") and d[4:] in PLACEHOLDER_DOMAINS or d in PLACEHOLDER_DOMAINS or \
+        d.endswith(".example.com")
+
+
+def is_configured(cfg):
+    """Настройка закончена: project.domain задан и это не example.com (комментарии не в счёт)."""
+    dom = get(cfg, "project.domain", "")
+    return bool(str(dom or "").strip()) and not is_placeholder_domain(dom)
 
 
 def parse_yaml(raw, warnings=None):

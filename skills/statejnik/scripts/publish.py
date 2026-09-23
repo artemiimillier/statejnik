@@ -20,8 +20,9 @@
 
 Гейт приёмки: send --status publish требует work/<slug>/accepted.md (запись приёмки
 из 06-review; slug - из frontmatter или имени папки статьи). Если в accepted.md есть
-sha256, хеш отправляемого файла должен совпасть. Обойти можно только флагом
---force-without-acceptance (громкое предупреждение, пометка в published.json).
+sha256, хеш отправляемого файла (final.md как есть, байт в байт) должен совпасть.
+Поле status в выходном файле/записи площадки выставляет сам скрипт по --status;
+в final.md его вручную не менять (это изменит хеш и снимет приёмку).
 send --status draft без приёмки разрешён, но печатает предупреждение.
 
 Коды выхода: 0 - готово; 1 - ошибка площадки/сети/конфига; 4 - гейт приёмки
@@ -47,7 +48,7 @@ import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _net import load_env, need_env, request, request_json  # noqa: E402
-from _config import find_config, load_config, get  # noqa: E402
+from _config import find_config, load_config, load_for, get  # noqa: E402
 from _article import load_article  # noqa: E402
 from _ru import translit  # noqa: E402
 
@@ -410,8 +411,7 @@ def main():
     s.add_argument("article")
     s.add_argument("--status", choices=("draft", "publish"), default="draft")
     s.add_argument("--slug", help="slug статьи (по умолч. из frontmatter, затем имя папки work/<slug>/)")
-    s.add_argument("--force-without-acceptance", action="store_true",
-                   help="публиковать --status publish без work/<slug>/accepted.md (только по прямому решению владельца)")
+    s.add_argument("--force-without-acceptance", action="store_true", help=argparse.SUPPRESS)
     r = sub.add_parser("record")
     r.add_argument("target")
     r.add_argument("slug")
@@ -422,7 +422,7 @@ def main():
     a = p.parse_args()
 
     load_env()
-    cfg = load_config(find_config(a.config))
+    _, cfg = load_for(a.config)  # пути площадок и work/ - от рабочей папки, вверх не ищем
 
     if a.cmd == "list":
         targets = get(cfg, "publish.targets", {}) or {}
@@ -461,8 +461,8 @@ def main():
     if a.status == "publish" and not ok:
         if not a.force_without_acceptance:
             print(f"СТОП: публикация без приёмки запрещена - {msg}.\n"
-                  "  Черновик можно отправить: --status draft. Обойти гейт по прямому решению владельца: "
-                  "--force-without-acceptance.", file=sys.stderr)
+                  "  Пройдите приёмку по references/process/06-review.md (и финальную вычитку) "
+                  "или отправьте черновиком: --status draft.", file=sys.stderr)
             sys.exit(EXIT_GATE)
         print("!" * 70 + f"\nВНИМАНИЕ: публикация БЕЗ ПРИЁМКИ (--force-without-acceptance): {msg}.\n"
               "Это отмечено в work/published.json. Сообщите владельцу.\n" + "!" * 70, file=sys.stderr)

@@ -323,7 +323,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    cfg = cfgmod.load_config(args.config or cfgmod.find_config())
+    _, cfg = cfgmod.load_for(args.config, near=args.article)
     max_per_1k = args.max_per_1k if args.max_per_1k is not None \
         else float(cfgmod.get(cfg, "tools.cadence.max_per_1k", DEFAULT_MAX_PER_1K))
 

@@ -3,7 +3,7 @@
 > **Это справочник, а не ворота.** Копировать файл в `work/`, отмечать галочки и сверять число `[ ]` не нужно - так было в старой методологии из 16 этапов (`references/methodology.md`), нумерация этапов ниже - оттуда.
 >
 > **Обязательные ворота статьи** - только три, все записываются в `work/<slug>/accepted.md`:
-> 1. блокирующие скрипты зелёные (таблица «Проверки» в `SKILL.md`: structure-check, claims-check, originality-check, запреты владельца);
+> 1. блокирующие скрипты зелёные (`check-all.py`, таблица «Проверки» в `SKILL.md`: structure-check, claims-check, originality-check, запреты владельца, длинные предложения в read-aloud-check);
 > 2. вердикт независимого проверяющего без блокеров (`references/process/06-review.md`);
 > 3. accept сверяющего финал (`references/process/final-humanization.md`).
 >

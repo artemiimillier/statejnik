@@ -40,7 +40,7 @@ import urllib.parse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _net import load_env, request, env  # noqa: E402
 from _ru import stems, normalize, intent, ARTICLE_FIT, article_type, contains_term, foreign_geo  # noqa: E402
-from _config import find_config, load_config, get, as_list  # noqa: E402
+from _config import find_config, load_config, load_for, get, as_list  # noqa: E402
 
 WORDSTAT_URL = "https://api.wordstat.yandex.net/v1/topRequests"
 
@@ -119,7 +119,7 @@ _TASK = re.compile(r"(?<!\w)(как|своими руками|почему|за�
 
 
 def brand_from_domain(domain):
-    """mebelion.ru → mebelion; www.divan.ru → divan; andrea-mebel.ru → andrea mebel."""
+    """mebelion.ru → mebelion; www.shop.ru → shop; andrea-mebel.ru → andrea mebel."""
     d = str(domain).lower().strip()
     d = re.sub(r"^[a-z]+://", "", d).split("/")[0]
     parts = [p for p in d.split(".") if p and p != "www"]
@@ -191,7 +191,7 @@ def main():
     a = p.parse_args()
 
     load_env()
-    cfg = load_config(find_config(a.config))
+    _, cfg = load_for(a.config, near=a.out)
     seeds = list(a.seeds)
     if a.seeds_file:
         with open(a.seeds_file, encoding="utf-8") as f:

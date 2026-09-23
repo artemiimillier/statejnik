@@ -142,7 +142,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    cfg = cfgmod.load_config(args.config or cfgmod.find_config())
+    _, cfg = cfgmod.load_for(args.config, near=args.article)
 
     max_sent = args.max_sentence if args.max_sentence is not None \
         else int(cfgmod.get(cfg, "tools.read_aloud.max_sentence_words",

@@ -8,7 +8,7 @@
 - **финальный редактор** - свежий субагент без истории автора, промпт `templates/prompts/final-editor.md`;
 - **сверяющий финал** - ещё один свежий субагент, без истории автора и без объяснений редактора, промпт `templates/prompts/final-verify.md`.
 
-Как запустить в любом агенте (`delegate_task`, Task, `hermes -z`, `claude -p`, `codex exec`) - [subagents](subagents.md).
+Как запустить в любом агенте (`delegate_task`, Task, `hermes --in <папка> -z`, `claude -p`, `codex exec`) и как собрать промпт (`prompt.py final-editor` / `final-verify`) - [subagents](subagents.md).
 
 Нельзя имитировать эти роли внутри основного контекста («представь, что ты другой редактор») - это не независимость.
 
@@ -27,10 +27,10 @@
 
 2. **Диагностика до правок.**
    ```
-   python3 $SKILL_DIR/scripts/ai-cadence-check.py work/<slug>/draft.md
-   python3 $SKILL_DIR/scripts/read-aloud-check.py work/<slug>/draft.md
+   python3 $SKILL_DIR/scripts/check-all.py work/<slug>/draft.md --out-dir work/<slug>/final-review/iteration-1/checks-before
+   cp work/<slug>/final-review/iteration-1/checks-before/summary.md work/<slug>/final-review/iteration-1/diagnostics-before.txt
    ```
-   Вывод и коды выхода - в `final-review/iteration-1/diagnostics-before.txt`. Диагностика ничего не меняет.
+   Полный вывод каждой проверки (включая ai-cadence-check и read-aloud-check) - рядом в `checks-before/`; сводка - в `diagnostics-before.txt`. После правок редактора - то же на `candidate.md` в `checks-after/` и `diagnostics-after.txt`. Диагностика ничего не меняет.
 
 3. **Финальный редактор** (свежий контекст, без инструментов записи на сайт; промпт `templates/prompts/final-editor.md`). Получает текст, brief, claims.json, канон reader-reality, anti-ai, голосовой образец и диагностику. Последовательно проверяет:
    - реальность исходной ситуации и обоснованность вывода по [reader-reality](reader-reality.md); в ответе обязательны содержательные секции `reader-reality` и `reasoning`; ложная посылка - отказ и возврат в исследование, а не защита исходника;
@@ -53,7 +53,7 @@
 
 6. **Итерации.** reject → следующая пара: блокеры сверяющего выписать в `iteration-<M>/blockers.md`; новый редактор получает тот же исходник и этот файл (не рассуждения сверяющего целиком), новый сверяющий - новый кандидат и тот же исходник. **Максимум три пары.** После третьего reject исходный файл не заменяется, приёмки нет, кандидаты и вердикты остаются в `final-review/`, статья - черновик, владелец получает причину.
 
-7. **Accept.** Кандидат принятой итерации копируется в `work/<slug>/final.md` без изменений; в `work/<slug>/accepted.md` дописывается раздел `final` (хеш `final.md` считать инструментом). Затем повторить на `final.md` блокирующие скрипты (в том числе `claims-check.py work/<slug> --text work/<slug>/final.md`) и diff с принятым в [06-review](06-review.md) черновиком. Новый факт, команда, условие, источник, риск или расширенное обещание → изменённая часть к независимому проверяющему, затем финальная вычитка заново.
+7. **Accept.** Кандидат принятой итерации копируется в `work/<slug>/final.md` без изменений; в `work/<slug>/accepted.md` дописывается раздел `final` (хеш `final.md` как есть считать инструментом; поле `status: draft` не трогать - статус ставит `publish.py`). Затем `check-all.py work/<slug>/final.md --round final` и diff с принятым в [06-review](06-review.md) черновиком. Новый факт, команда, условие, источник, риск или расширенное обещание → изменённая часть к независимому проверяющему, затем финальная вычитка заново.
 
 **Критерий готовности:** в `work/<slug>/accepted.md` есть разделы `review` и `final`; последний `verdict.md` - accept с пустыми blockers и содержательными reader-reality и reasoning; `final.md` побайтно равен принятому кандидату; повторные скрипты прогнаны.
 

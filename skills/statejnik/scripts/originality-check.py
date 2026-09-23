@@ -191,7 +191,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    cfg = cfgmod.load_config(args.config or cfgmod.find_config())
+    _, cfg = cfgmod.load_for(args.config, near=args.draft)
 
     cosine_max = args.max_cosine if args.max_cosine is not None \
         else float(cfgmod.get(cfg, "tools.originality.max_cosine", DEFAULT_COSINE_MAX))
