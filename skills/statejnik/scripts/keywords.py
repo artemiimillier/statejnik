@@ -36,8 +36,12 @@ def wordstat(phrase, token, regions=None, limit=50):
     body = {"phrase": phrase}
     if regions:
         body["regions"] = [int(r) for r in regions]
-    status, _, raw = request("POST", WORDSTAT_URL, body=body, timeout=30,
-                             headers={"Authorization": "Bearer " + token})
+    try:
+        status, _, raw = request("POST", env("WORDSTAT_API_URL") or WORDSTAT_URL, body=body, timeout=30,
+                                 headers={"Authorization": "Bearer " + token})
+    except Exception as e:  # сеть, DNS, сертификат
+        print(f"  ! Вордстат недоступен ({type(e).__name__}): {str(e)[:160]}. Продолжаю с подсказками.", file=sys.stderr)
+        return []
     if status == 401 or status == 403:
         raise SystemExit("Вордстат отклонил токен (HTTP %d). Проверьте WORDSTAT_TOKEN в .env." % status)
     if status == 429:
