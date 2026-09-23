@@ -18,6 +18,14 @@ import urllib.request
 UA = "Mozilla/5.0 (compatible; statejnik/1.0)"
 
 
+_FILE_ENV = {}
+
+
+def env(name):
+    """Значение переменной: окружение важнее файла .env."""
+    return os.getenv(name) or _FILE_ENV.get(name)
+
+
 def load_env(path=None):
     """Подхватить KEY=VALUE из .env. Уже заданные переменные окружения важнее файла."""
     path = path or os.environ.get("STATEJNIK_ENV") or os.path.join(os.getcwd(), ".env")
@@ -35,18 +43,18 @@ def load_env(path=None):
             value = value.strip()
             if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
                 value = value[1:-1]
-            os.environ.setdefault(key, value)
+            _FILE_ENV.setdefault(key, value)
 
 
 def need_env(*names):
     """Вернуть значения переменных или остановиться с понятной ошибкой (без значений)."""
-    missing = [n for n in names if not os.environ.get(n)]
+    missing = [n for n in names if not env(n)]
     if missing:
         raise SystemExit(
             "не заданы переменные: " + ", ".join(missing)
             + ". Впишите их в файл .env рабочей папки (см. templates/env.example)."
         )
-    return [os.environ[n] for n in names]
+    return [env(n) for n in names]
 
 
 def set_env_line(name, value, path=None):

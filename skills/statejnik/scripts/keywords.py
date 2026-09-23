@@ -25,7 +25,7 @@ import time
 import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _net import load_env, request  # noqa: E402
+from _net import load_env, request, env  # noqa: E402
 from _ru import stems, normalize, intent, ARTICLE_FIT, article_type  # noqa: E402
 from _config import find_config, load_config, get  # noqa: E402
 
@@ -134,7 +134,7 @@ def main():
     regions = a.region or [str(r) for r in (get(cfg, "seo.regions", []) or [])]
     brands = a.brand + list(get(cfg, "project.brands", []) or [])
 
-    token = os.environ.get("WORDSTAT_TOKEN")
+    token = env("WORDSTAT_TOKEN")
     found = {}
 
     def add(phrase, count, source):
