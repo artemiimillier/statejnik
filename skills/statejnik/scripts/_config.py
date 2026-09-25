@@ -32,6 +32,11 @@ SCHEMA = {
     "audience": {"profile": None, "jargon_level": None},
     "voice": {"person": None, "address": None, "source": None, "forbidden": None},
     "cta": {"offer": None, "url": None},
+    # Agent-managed editorial settings, not an image service API.
+    "visuals": {"mode": None, "text_only_approval": None, "generator": None,
+                "processor": None, "reviewer": None, "delivery": None,
+                "budget": None, "max_attempts": None},
+    "materials": {"video_sources": None, "cta_sources": None},
     "editorial": {"banned_words": None, "notes": None},
     "seo": {"seeds": None, "regions": None, "competitors": None, "exclude": None},
     "publish": {"auto": None, "default": None, "targets": None},

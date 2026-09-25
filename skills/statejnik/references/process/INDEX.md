@@ -17,6 +17,7 @@
 | Спрос | [03 План](03-plan.md) | выбор делает независимый проверяющий в отдельном контексте | `work/plan.md`, `work/<slug>/card.md` |
 | Производство по карточке | [04 Исследование](04-research.md) | автор | `work/<slug>/brief.md`, `claims.json`, `sources/` |
 | Производство | [05 Написание](05-write.md) | автор | `work/<slug>/draft.md`, `work/<slug>/claims.json`; структура по `../editorial/editorial-standard.md` и `../../templates/draft-skeleton.md` |
+| Производство после черновика | [Смысловые изображения](semantic-visuals.md) | автор; визуальную проверку может выполнить владелец | `visual-plan.md`, публичные `assets/`; режим согласован при onboarding |
 | Производство | [06 Проверка](06-review.md) → [финальная вычитка](final-humanization.md) | независимый проверяющий, затем финальный редактор и сверяющий финал ([как запускать](subagents.md)) | `work/<slug>/review.md`, `work/<slug>/final-review/`, `work/<slug>/final.md`, `work/<slug>/accepted.md` |
 | Производство | [07 Выпуск](07-delivery.md) | автор; скрипт публикации | `publish.py send ... --status draft` (боевая - при разрешении и наличии `accepted.md`), сверка живой страницы или файла, `publish.py ping <url>` |
 | Обратная связь | [08 Обратная связь](08-feedback.md) | автор | `work/journal.md`, `work/reports/YYYY-Www.md`, правка `work/plan.md`; отчёт владельцу по `../owner-report.md` |
@@ -34,6 +35,8 @@
 Как запустить независимую роль в любом агенте (Hermes - `delegate_task`, Claude Code - Task, иначе отдельный процесс `hermes -z`, `claude -p`, `codex exec` с промптом из файла), готовые промпты (`templates/prompts/`), изоляция от ключей и ориентиры по времени - [subagents](subagents.md).
 
 Автор не принимает сам себя. «Пропущено», «проверено вручную», «понижено до ручной проверки» не равны «прошло» и не заменяют обязательную независимую проверку.
+
+Видео и материалы для CTA проверять до написания по [semantic-visuals](semantic-visuals.md), результат — `work/<slug>/materials.md`. В enabled 1–5 inline-картинок кроме обложки обязательны до review; в согласованном text_only их отсутствие допустимо. Это отдельное согласованное условие визуального режима, не квота на видео/CTA.
 
 ## Общие неизменяемые ограничения
 

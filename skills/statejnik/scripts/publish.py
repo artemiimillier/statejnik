@@ -49,7 +49,8 @@ import urllib.parse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _net import load_env, need_env, request, request_json  # noqa: E402
 from _config import find_config, load_config, load_for, get  # noqa: E402
-from _article import load_article  # noqa: E402
+from _article import load_article, md_to_html
+from _assets import export_assets, local_assets  # noqa: E402
 from _ru import translit  # noqa: E402
 
 LEDGER = os.path.join("work", "published.json")
@@ -122,6 +123,8 @@ def manual_send(name, tcfg, art, status, cfg):
     folder = _manual_dir(tcfg)
     os.makedirs(folder, exist_ok=True)
     base = os.path.join(folder, art["slug"])
+    body, assets = export_assets(art["body"], art["source_path"], folder, art["slug"])
+    art = dict(art, body=body, html=md_to_html(body))
     fm = _set_status_line(art.get("frontmatter_raw") or f'title: "{art["title"]}"', status)
     with open(base + ".md", "w", encoding="utf-8") as f:
         f.write(f"---\n{fm}\n---\n\n# {art['title']}\n\n{art['body'].lstrip()}")
@@ -138,6 +141,8 @@ def manual_send(name, tcfg, art, status, cfg):
     hero_html = _hero_html(art["meta"].get("hero_promise"))
     title = art["meta"].get("meta_title") or art["title"]
     doc = (f"<!doctype html>\n<html lang=\"ru\"><head><meta charset=\"utf-8\">"
+           f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+           f'<style>img {{max-width:100%;height:auto}}</style>'
            f"<title>{html.escape(str(title))}</title>\n"
            f"<meta name=\"description\" content=\"{html.escape(art['description'])}\">\n"
            + "\n".join(metas) + "\n</head><body>\n"
@@ -146,7 +151,7 @@ def manual_send(name, tcfg, art, status, cfg):
     with open(base + ".html", "w", encoding="utf-8") as f:
         f.write(doc)
     return {"id": art["slug"], "url": None, "status": "draft-file" if status != "publish" else "ready-file",
-            "files": [base + ".md", base + ".html"]}
+            "files": [base + ".md", base + ".html"] + assets}
 
 
 # ── WordPress ────────────────────────────────────────────────────────────────
@@ -478,8 +483,13 @@ def main():
     fm = re.match(r"^(?:```ya?ml\s*\n)?---\s*\n(.*?)\n---\s*\n", raw_text, re.S)
     art = {"meta": meta, "title": title, "body": body, "html": html_body, "slug": slug, "known_id": known,
            "description": str(meta.get("meta_description") or meta.get("excerpt") or ""),
-           "frontmatter_raw": fm.group(1) if fm else ""}
-    res = ADAPTERS[t["type"]][1](a.target, t, art, a.status, cfg)
+           "frontmatter_raw": fm.group(1) if fm else "", "source_path": a.article}
+    try:
+        if t["type"] not in ("manual", "files") and local_assets(body, a.article):
+            raise ValueError("This adapter does not upload assets: upload through an authorized channel and use verified public URLs before review")
+        res = ADAPTERS[t["type"]][1](a.target, t, art, a.status, cfg)
+    except (ValueError, OSError) as exc:
+        raise SystemExit(str(exc))
     if res is None:
         return
     res["at"] = dt.datetime.now().isoformat(timespec="seconds")
